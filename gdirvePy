@@ -1,0 +1,373 @@
+#!/bin/python3
+
+from __future__ import print_function
+
+import os.path
+import sys
+import magic
+import traceback
+import time
+
+mime = magic.Magic(mime=True)
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaIoBaseDownload
+
+import io
+import argparse
+
+# If modifying these scopes, delete the file token.json.
+
+SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly',
+        'https://www.googleapis.com/auth/drive',
+        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/drive.appdata',
+        'https://www.googleapis.com/auth/drive.metadata',
+        'https://www.googleapis.com/auth/drive.photos.readonly']
+        
+def timeName():
+    return str(time.time()).replace('.',' ').split(' ')[0]
+
+def queryDrive(service,id,name,fields):
+     
+     results=[]
+
+      
+     if name:
+        if fields is None:
+           fields='id,name,md5Checksum'
+
+        name,fileId=listItems(service,name=name)
+        
+
+        file = service.files().get(
+        fileId=fileId,
+        fields=fields
+    ).execute()
+
+        print(file)
+
+
+     if id:
+
+        if fields is None:
+           fields='nextPageToken, files(id,name,md5Checksum)'
+
+        query = "trashed = false and '{}' in parents".format(id)
+
+
+        results = service.files().list(
+        q=query,
+        fields=fields,
+        pageSize=200,).execute()
+
+        
+
+    
+def listItems(service,fileId=None,name=None,pid=None):
+        #print('fileId=',fileId,"name=",name,"pid=",pid)
+        #exit()
+        results=[]
+
+        if pid:
+             
+            #query = "mimeType != 'application/vnd.google-apps.folder' and trashed = false and '{}' in parents".format(pid) 
+            query = "trashed = false and '{}' in parents".format(pid)
+            results = service.files().list(
+            q=query,
+            fields="nextPageToken, files(id,name)",
+            pageSize=200,).execute()
+
+        else:
+            
+            results = service.files().list(
+            fields="nextPageToken, files(id,name)",
+            pageSize=200,).execute()
+
+            
+        items = results.get('files', [])
+
+        if not items:
+            print('No files found.')
+            return
+
+        if name:
+                for item in items:
+                     if name in item.values():
+                                print(item)
+                                return item['name'] , item['id']
+                
+        else:
+            for item in items:
+                    print(item)
+
+                    #print(u'{0} ({1})'.format(item['name'], item['id']))
+
+
+def uploadFile(service,FILE,parents_id=None,name=None):
+
+            """
+                       upload(service,file,parents_id)
+            """
+        
+            the_file_to_upload = FILE
+            file_name=the_file_to_upload
+            
+            metadata={}
+
+            if name:
+                metadata.update({'name':name})
+
+            else:
+
+                if '/' in the_file_to_upload:
+            
+                    file_name=the_file_to_upload[the_file_to_upload.rindex('/')+1:]
+                    metadata.update({'name':file_name})
+                
+                else:
+
+                    metadata = {'name': file_name }
+                
+            try:
+            
+               if parents_id:
+
+                        metadata.update({'parents': [ parents_id  ] })
+                        print('id: ',parents_id)
+                
+               
+            except Exception as E:
+                 print(E)
+
+
+            
+            print('metadata Object ', metadata)
+
+            media = MediaFileUpload(the_file_to_upload,
+                        chunksize=1024 * 1024,
+                        # Not sure whether or not this mimetypes is necessary:
+                        mimetype=mime.from_file(FILE),
+                        resumable=True)
+
+            request = service.files().create(body=metadata, media_body=media)
+
+            response = None
+
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                       print("Uploaded %d%%." % int(status.progress() * 100))
+
+            print(" Upload of {} is complete ".format(file_name))
+
+
+
+def getFile( service,FILE,fileId,name=None ):
+                
+                if name:
+                    name,fileId=listItems(service,name=name)
+                    
+
+                request = service.files().get_media(fileId=fileId)
+
+                fh = io.FileIO(FILE, 'wb')
+
+                downloader = MediaIoBaseDownload(fh, request)
+
+                done = False
+                
+                while done is False:
+                     status, done = downloader.next_chunk()
+                     print("Download %d%%." % int(status.progress() * 100))
+                     
+                     
+                     
+def updateFile(service,FILE,fileId):
+            
+                 media = MediaFileUpload(FILE,
+                        chunksize=1024 * 1024,
+                        # Not sure whether or not this mimetypes is necessary:
+                        mimetype=mime.from_file(FILE),
+                        resumable=True)
+                  
+                 name,fid = listItems(service,name=fileId)
+                 
+                 metadata = {'name': name }
+                 
+                 print('metadata',metadata)
+                        
+                 service.files().update(fileId=fileId,body=metadata,media_body=media).execute()
+                 
+
+def delete(service,fileId):                 
+          status = service.files().delete(fileId=fileId).execute()
+          print(status)
+
+
+
+def folder(service,parent=None,name=None):
+    metadata = {
+          'name': name,
+          'mimeType': "application/vnd.google-apps.folder"
+        }
+
+        
+    metadata.update( { 'parents' : [ parent ] })
+    
+    if metadata['name'] == None:
+       metadata['name'] = timeName()
+        
+     
+    
+    folder = service.files().create(body = metadata,fields='id').execute()
+
+    print(folder)
+
+    print('ID',folder.get('id'))
+
+    
+parser = argparse.ArgumentParser()
+
+gdapiMethods = parser.add_subparsers(title="gdapi commands", help="Methods")
+
+
+list_parser = gdapiMethods.add_parser("list", help="List File And Folder")
+list_parser.add_argument('-t',nargs='*',type=str,help='get item  by name or id')
+list_parser.add_argument('-id',type=str,help='parent id')
+list_parser.set_defaults(func=listItems)
+
+get_parser = gdapiMethods.add_parser("get", help="Get File Using File Id or name")
+get_parser.add_argument('-o',type=str,help='output file name')
+get_parser.add_argument('-id',type=str,help='file id')
+get_parser.add_argument('-name',type=str,help='get file using name ')
+get_parser.set_defaults(func=getFile)
+
+
+upload_parser = gdapiMethods.add_parser("upload", help="upload File Using Parent Id")
+upload_parser.add_argument('-f',type=str,help='input file')
+upload_parser.add_argument('-id',type=str,help='parent id')
+upload_parser.add_argument('-name',type=str,help='file name')
+upload_parser.set_defaults(func=uploadFile)
+
+update_parser = gdapiMethods.add_parser("update", help="update File Using File Id")
+update_parser.add_argument('-f',type=str,help='input file')
+update_parser.add_argument('-id',type=str,help='file id')
+update_parser.set_defaults(func=updateFile)
+
+
+delete_parser = gdapiMethods.add_parser("delete", help="delete File Using File or folder")
+delete_parser.add_argument('-id',type=str,help='file Id')
+delete_parser.set_defaults(func=delete)
+
+folder_parser =  gdapiMethods.add_parser("folder", help="create folder")
+folder_parser.add_argument('-id',type=str,help='Parent  Id')
+folder_parser.add_argument('-name',type=str,help='folder name')
+folder_parser.set_defaults(func=folder)
+
+# call queryDrive funcation
+query_parser =  gdapiMethods.add_parser("query", help="query Drive")
+query_parser.add_argument('-id',type=str,help='Parent  Id')
+query_parser.add_argument('-name',type=str,help='folder or file  name')
+query_parser.add_argument('-f',type=str,help='fields ') # fields
+query_parser.set_defaults(func=queryDrive)
+
+
+
+args = parser.parse_args()
+
+
+def callMethods(service):
+
+    if args.func.__name__ == 'listItems':
+       if args.t:
+          if args.t[0]:
+             print(listItems(service,name=args.t[0],pid=args.id))
+ 
+       else:
+          listItems(service,pid=args.id)
+
+    if args.func.__name__ == 'getFile':
+        if args.o == None:
+            args.o=args.name
+
+        getFile(service,args.o,args.id,args.name)
+
+    if args.func.__name__ == 'uploadFile':
+        uploadFile(service,args.f,args.id,name=args.name)
+    
+    if args.func.__name__ == 'updateFile':
+        updateFile(service,args.f,args.id)
+        
+    if args.func.__name__ == 'delete':
+        delete(service,args.id)
+
+    if args.func.__name__ == 'folder':
+
+        folder(service,args.id,args.name)
+
+    if args.func.__name__ == 'queryDrive':
+
+        queryDrive(service,args.id,args.name,args.f)
+        
+    
+def main():
+    """Shows basic usage of the Drive v3 API.
+    Prints the names and ids of the first 10 files the user has access to.
+    """
+    HOME= os.getenv('HOME')
+    tokenPath=HOME+'/.config/gdirvePy/token.json'
+    credPath=HOME+'/.config/gdirvePy/credentials.json'
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+
+    if os.path.exists(tokenPath):
+        print('token Path',tokenPath)
+        creds = Credentials.from_authorized_user_file(tokenPath, SCOPES)
+    else:
+        pass # print('token: not found at',tokenPath)
+                
+    # If there are no (valid) credentials available, let the user log in.
+
+    if not creds or not creds.valid:
+
+        if creds and creds.expired and creds.refresh_token:
+            print('cread expired')
+            creds.refresh(Request())
+
+        else:
+            print("browser flow disabled")
+            #flow = InstalledAppFlow.from_client_secrets_file(
+            #    credPath, SCOPES)
+            #creds = flow.run_local_server(port=0)
+            
+        # Save the credentials for the next run
+        with open(tokenPath, 'w') as token:
+            token.write(creds.to_json())
+
+    try:
+
+        service = build('drive', 'v3', credentials=creds)
+        callMethods(service)
+        
+    except Exception as error:
+        # TODO(developer) - Handle errors from drive API.
+        print(f'An error occurred: {error}')
+        traceback.print_exc()
+
+
+if __name__ == '__main__':
+
+    if len(sys.argv) ==  1:
+        print('try for  `gdapi -h` for usage ')
+        exit()
+
+    main()
